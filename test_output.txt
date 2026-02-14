@@ -1,0 +1,3 @@
+-rw-r--r--. 1 raul raul 2599 Feb 12 19:52 .env
+-rw-r--r--. 1 raul raul  102 Feb 12 19:51 .gitignore
+-rw-r--r--. 1 raul raul  320 Feb 12 19:57 init_db.py
