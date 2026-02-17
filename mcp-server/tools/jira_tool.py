@@ -3,8 +3,7 @@ Jira integration tool for MCP server.
 Provides access to Jira tickets, projects, and sprints.
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from typing import Dict, Any
 
 
 # Mock Jira data for demonstration
