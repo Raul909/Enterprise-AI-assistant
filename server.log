@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/app/mcp-server/server.py", line 6, in <module>
+    from fastapi import FastAPI, Request, HTTPException, Depends
+ModuleNotFoundError: No module named 'fastapi'

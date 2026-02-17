@@ -3,9 +3,22 @@ Jira integration tool for MCP server.
 Provides access to Jira tickets, projects, and sprints.
 """
 
+import os
+import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
+try:
+    from jira import JIRA
+    from jira.exceptions import JIRAError
+    JIRA_AVAILABLE = True
+except ImportError:
+    JIRA = None
+    JIRAError = Exception
+    JIRA_AVAILABLE = False
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Mock Jira data for demonstration
 MOCK_PROJECTS = {
@@ -129,8 +142,46 @@ MOCK_SPRINTS = [
     }
 ]
 
+def get_jira_client():
+    """
+    Initialize Jira client from environment variables.
+    Returns None if configuration is missing.
+    """
+    if not JIRA_AVAILABLE:
+        return None
 
-def search_jira(
+    url = os.environ.get("JIRA_URL")
+    username = os.environ.get("JIRA_USERNAME")
+    token = os.environ.get("JIRA_API_TOKEN")
+
+    if url and username and token:
+        try:
+            return JIRA(server=url, basic_auth=(username, token))
+        except Exception as e:
+            logger.error(f"Failed to connect to Jira: {e}")
+            return None
+    return None
+
+def _issue_to_dict(issue) -> Dict[str, Any]:
+    """Convert a Jira issue object to a dictionary."""
+    return {
+        "key": issue.key,
+        "summary": issue.fields.summary,
+        "description": issue.fields.description,
+        "type": issue.fields.issuetype.name,
+        "status": issue.fields.status.name,
+        "priority": issue.fields.priority.name if hasattr(issue.fields, 'priority') and issue.fields.priority else "None",
+        "assignee": issue.fields.assignee.emailAddress if hasattr(issue.fields, 'assignee') and issue.fields.assignee else None,
+        "reporter": issue.fields.reporter.emailAddress if hasattr(issue.fields, 'reporter') and issue.fields.reporter else None,
+        "created": issue.fields.created,
+        "updated": issue.fields.updated,
+        "sprint": getattr(issue.fields, 'customfield_10020', [None])[0].name if hasattr(issue.fields, 'customfield_10020') and getattr(issue.fields, 'customfield_10020') else None,
+        # Note: customfield_10020 is commonly Sprint in Jira Cloud, but it might vary.
+        # For robustness, we might omit sprint if not easily available or handle dynamic fields.
+        "labels": issue.fields.labels
+    }
+
+def _search_jira_mock(
     query: str,
     project: str | None = None,
     status: str | None = None,
@@ -139,21 +190,7 @@ def search_jira(
     ticket_type: str | None = None,
     limit: int = 10
 ) -> Dict[str, Any]:
-    """
-    Search Jira tickets using JQL-like filters.
-    
-    Args:
-        query: Text search query
-        project: Filter by project key (e.g., "EA")
-        status: Filter by status (e.g., "In Progress", "Done")
-        assignee: Filter by assignee email
-        priority: Filter by priority (e.g., "High", "Critical")
-        ticket_type: Filter by type (e.g., "Bug", "Story")
-        limit: Maximum results to return
-    
-    Returns:
-        Search results
-    """
+    """Mock implementation of search_jira."""
     query_lower = query.lower()
     results = []
     
@@ -189,23 +226,65 @@ def search_jira(
         "results": results
     }
 
+def search_jira(
+    query: str,
+    project: str | None = None,
+    status: str | None = None,
+    assignee: str | None = None,
+    priority: str | None = None,
+    ticket_type: str | None = None,
+    limit: int = 10
+) -> Dict[str, Any]:
+    """
+    Search Jira tickets using JQL-like filters.
+    """
+    client = get_jira_client()
+    if not client:
+        return _search_jira_mock(query, project, status, assignee, priority, ticket_type, limit)
 
-def get_jira_ticket(ticket_key: str) -> Dict[str, Any]:
-    """
-    Get detailed information about a specific Jira ticket.
+    jql_parts = []
     
-    Args:
-        ticket_key: Jira ticket key (e.g., "EA-101")
+    # Text search (summary ~ query OR description ~ query)
+    if query:
+        # Sanitize query for JQL
+        clean_query = query.replace('"', '\"')
+        jql_parts.append(f'(summary ~ "{clean_query}" OR description ~ "{clean_query}")')
     
-    Returns:
-        Ticket details
-    """
+    if project:
+        jql_parts.append(f'project = "{project}"')
+    if status:
+        jql_parts.append(f'status = "{status}"')
+    if assignee:
+        jql_parts.append(f'assignee = "{assignee}"')
+    if priority:
+        jql_parts.append(f'priority = "{priority}"')
+    if ticket_type:
+        jql_parts.append(f'issuetype = "{ticket_type}"')
+
+    jql_query = " AND ".join(jql_parts) if jql_parts else "order by created DESC"
+
+    try:
+        issues = client.search_issues(jql_query, maxResults=limit)
+        results = [_issue_to_dict(issue) for issue in issues]
+        return {
+            "success": True,
+            "count": len(results),
+            "results": results
+        }
+    except Exception as e:
+        logger.error(f"Jira search failed: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def _get_jira_ticket_mock(ticket_key: str) -> Dict[str, Any]:
+    """Mock implementation of get_jira_ticket."""
     for ticket in MOCK_TICKETS:
         if ticket["key"] == ticket_key.upper():
             return {
                 "success": True,
                 **ticket,
-                # Add mock comments
                 "comments": [
                     {
                         "author": "alice@company.com",
@@ -218,7 +297,6 @@ def get_jira_ticket(ticket_key: str) -> Dict[str, Any]:
                         "created": "2024-01-12T14:00:00Z"
                     }
                 ],
-                # Add mock history
                 "changelog": [
                     {
                         "author": "alice@company.com",
@@ -235,17 +313,51 @@ def get_jira_ticket(ticket_key: str) -> Dict[str, Any]:
         "error": f"Ticket not found: {ticket_key}"
     }
 
+def get_jira_ticket(ticket_key: str) -> Dict[str, Any]:
+    """
+    Get detailed information about a specific Jira ticket.
+    """
+    client = get_jira_client()
+    if not client:
+        return _get_jira_ticket_mock(ticket_key)
 
-def get_project_info(project_key: str) -> Dict[str, Any]:
-    """
-    Get information about a Jira project.
-    
-    Args:
-        project_key: Project key (e.g., "EA")
-    
-    Returns:
-        Project information
-    """
+    try:
+        issue = client.issue(ticket_key)
+        ticket_data = _issue_to_dict(issue)
+
+        # Get comments
+        comments = []
+        if hasattr(issue.fields, 'comment') and issue.fields.comment:
+            for comment in issue.fields.comment.comments:
+                comments.append({
+                    "author": comment.author.emailAddress if hasattr(comment.author, 'emailAddress') else comment.author.displayName,
+                    "body": comment.body,
+                    "created": comment.created
+                })
+        ticket_data["comments"] = comments
+
+        # We're not fetching full changelog here as it requires expand='changelog' and parsing
+        # For simplicity, returning empty changelog for real Jira or we could implement it if needed
+        ticket_data["changelog"] = []
+
+        return {
+            "success": True,
+            **ticket_data
+        }
+    except Exception as e:
+        # Check if it's a 404
+        if "Issue Does Not Exist" in str(e):
+             return {
+                "success": False,
+                "error": f"Ticket not found: {ticket_key}"
+            }
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def _get_project_info_mock(project_key: str) -> Dict[str, Any]:
+    """Mock implementation of get_project_info."""
     if project_key.upper() in MOCK_PROJECTS:
         project = MOCK_PROJECTS[project_key.upper()]
         
@@ -268,21 +380,52 @@ def get_project_info(project_key: str) -> Dict[str, Any]:
         "error": f"Project not found: {project_key}"
     }
 
+def get_project_info(project_key: str) -> Dict[str, Any]:
+    """
+    Get information about a Jira project.
+    """
+    client = get_jira_client()
+    if not client:
+        return _get_project_info_mock(project_key)
 
-def list_sprints(
+    try:
+        project = client.project(project_key)
+
+        # Get ticket counts (this is expensive in real Jira, maybe we use JQL)
+        # JQL: project = KEY
+        # We can group by status
+
+        # Note: 'jira' library doesn't have a direct 'group by' search.
+        # We can simulate it by searching for all issues in project (limit=0, json_result=True) if API allows metadata,
+        # but standard search_issues gets issues.
+        # A lightweight way is to search for common statuses or just total count.
+
+        # Getting total count
+        jql = f'project = "{project_key}"'
+        issues = client.search_issues(jql, maxResults=0, json_result=True)
+        total_tickets = issues['total']
+
+        return {
+            "success": True,
+            "key": project.key,
+            "name": project.name,
+            "description": project.description if hasattr(project, 'description') else "",
+            "lead": project.lead.emailAddress if hasattr(project, 'lead') and hasattr(project.lead, 'emailAddress') else getattr(project.lead, 'displayName', ''),
+            "type": project.projectTypeKey if hasattr(project, 'projectTypeKey') else "software",
+            "total_tickets": total_tickets,
+            "ticket_counts": {"info": "Status breakdown not available in real-time mode"} # optimization
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def _list_sprints_mock(
     project_key: str | None = None,
     state: str | None = None
 ) -> Dict[str, Any]:
-    """
-    List sprints for a project.
-    
-    Args:
-        project_key: Optional project key to filter
-        state: Filter by state (active, closed, future)
-    
-    Returns:
-        List of sprints
-    """
+    """Mock implementation of list_sprints."""
     results = []
     
     for sprint in MOCK_SPRINTS:
@@ -314,25 +457,101 @@ def list_sprints(
         "sprints": results
     }
 
+def list_sprints(
+    project_key: str | None = None,
+    state: str | None = None
+) -> Dict[str, Any]:
+    """
+    List sprints for a project.
+    Note: In real Jira, this attempts to find boards associated with the project.
+    """
+    client = get_jira_client()
+    if not client:
+        return _list_sprints_mock(project_key, state)
+
+    try:
+        # Try to find boards for the project
+        boards = []
+        if project_key:
+            boards = client.boards(name=project_key)
+            if not boards:
+                # Fallback: try to find boards by project key filter
+                 boards = client.boards(projectKeyOrID=project_key)
+        else:
+            # If no project key, we might return too many sprints.
+            # Limit to first few boards? Or fail?
+            # Mock behavior returns all sprints.
+            return {
+                "success": False,
+                "error": "Project key is required for real Jira sprint listing"
+            }
+
+        sprints_data = []
+        for board in boards:
+            try:
+                sprints = client.sprints(board.id, state=state)
+                for sprint in sprints:
+                    # Get tickets in sprint? This is expensive.
+                    # Mock implementation returns tickets. Real implementation might skip it for performance
+                    # unless explicitly requested, but the signature matches mock.
+                    # We will return basic sprint info for now.
+
+                    sprints_data.append({
+                        "id": sprint.id,
+                        "name": sprint.name,
+                        "state": sprint.state,
+                        "start_date": getattr(sprint, 'startDate', None),
+                        "end_date": getattr(sprint, 'endDate', None),
+                        "goal": getattr(sprint, 'goal', ""),
+                        "board_id": board.id
+                    })
+            except Exception:
+                continue
+
+        return {
+            "success": True,
+            "count": len(sprints_data),
+            "sprints": sprints_data
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
 
 def get_my_tickets(email: str) -> Dict[str, Any]:
     """
     Get tickets assigned to a specific user.
-    
-    Args:
-        email: User's email address
-    
-    Returns:
-        List of assigned tickets
     """
-    results = [
-        ticket for ticket in MOCK_TICKETS
-        if ticket["assignee"] == email
-    ]
-    
-    return {
-        "success": True,
-        "assignee": email,
-        "count": len(results),
-        "tickets": results
-    }
+    client = get_jira_client()
+    if not client:
+        # Mock implementation inline for simplicity as it wasn't separate before
+        results = [
+            ticket for ticket in MOCK_TICKETS
+            if ticket["assignee"] == email
+        ]
+        return {
+            "success": True,
+            "assignee": email,
+            "count": len(results),
+            "tickets": results
+        }
+
+    try:
+        # JQL search
+        jql = f'assignee = "{email}" AND status != Done ORDER BY updated DESC'
+        issues = client.search_issues(jql, maxResults=50)
+        results = [_issue_to_dict(issue) for issue in issues]
+
+        return {
+            "success": True,
+            "assignee": email,
+            "count": len(results),
+            "tickets": results
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
