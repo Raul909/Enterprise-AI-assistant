@@ -138,7 +138,7 @@ class AIOrchestrator:
                     })
         
         # Step 4: Build prompt and call LLM
-        prompt = self._build_prompt(
+        messages = self._build_prompt(
             query=request.query,
             rag_context=rag_context,
             tool_results=tool_results,
@@ -146,7 +146,7 @@ class AIOrchestrator:
         )
         
         # Call LLM
-        answer = self._call_llm(prompt, request.max_tokens)
+        answer = self._call_llm(messages, request.max_tokens)
         
         # Step 5: Update conversation
         context.messages.append({"role": "user", "content": request.query})
@@ -228,61 +228,81 @@ class AIOrchestrator:
         rag_context: str,
         tool_results: List[Dict[str, Any]],
         conversation_history: List[Dict[str, str]]
-    ) -> str:
-        """Build the prompt for the LLM."""
+    ) -> List[Dict[str, str]]:
+        """Build the prompt messages for the LLM."""
         
-        history_text = ""
-        if conversation_history:
-            history_text = "\n## Conversation History\n"
-            for msg in conversation_history[-4:]:  # Last 4 messages
-                role = msg["role"].capitalize()
-                history_text += f"{role}: {msg['content'][:500]}\n"
-        
-        tool_text = ""
-        if tool_results:
-            tool_text = "\n## Tool Results\n"
-            for result in tool_results:
-                tool_text += f"**{result['tool']}**:\n{str(result['data'])[:1000]}\n\n"
-        
-        prompt = f"""You are an Enterprise AI Assistant helping employees find information and answer questions about company resources.
+        system_prompt = """You are an Enterprise AI Assistant helping employees find information and answer questions about company resources.
 
-## Context from Documents
-{rag_context}
-{tool_text}
-{history_text}
-
-## User Question
-{query}
-
-## Instructions
+Instructions:
 - Answer the question based on the provided context and tool results
 - If you don't have enough information, say so clearly
 - Be concise but comprehensive
 - Use professional, helpful language
 - If referencing specific documents or data, mention the source
+"""
 
-Answer:"""
+        # Build context content with XML tagging for security
+        context_parts = []
+
+        if rag_context:
+            context_parts.append(f"<context_from_documents>\n{rag_context}\n</context_from_documents>")
+
+        if tool_results:
+            tool_parts = []
+            for result in tool_results:
+                tool_parts.append(f"<tool_result name='{result['tool']}'>\n{str(result['data'])[:1000]}\n</tool_result>")
+            context_parts.append(f"<tool_results>\n{'\n'.join(tool_parts)}\n</tool_results>")
+
+        if conversation_history:
+            history_parts = []
+            for msg in conversation_history[-4:]:  # Last 4 messages
+                role = msg["role"]
+                # Sanitize role to prevent XML injection
+                safe_role = role.replace("<", "&lt;").replace(">", "&gt;")
+                history_parts.append(f"<{safe_role}>\n{msg['content'][:500]}\n</{safe_role}>")
+            context_parts.append(f"<conversation_history>\n{'\n'.join(history_parts)}\n</conversation_history>")
+
+        user_content = "\n\n".join(context_parts)
+        user_content += f"\n\n<user_question>\n{query}\n</user_question>"
         
-        return prompt
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
     
-    def _call_llm(self, prompt: str, max_tokens: int | None = None) -> str:
-        """Call the configured LLM."""
+    def _call_llm(self, messages: List[Dict[str, str]], max_tokens: int | None = None) -> str:
+        """Call the configured LLM with structured messages."""
         
         max_tokens = max_tokens or settings.openai_max_tokens
         
         try:
             if settings.ai_provider == "anthropic":
-                response = self.anthropic_client.messages.create(
-                    model=settings.anthropic_model,
-                    max_tokens=max_tokens,
-                    messages=[{"role": "user", "content": prompt}]
-                )
+                # Anthropic requires system prompt to be passed separately
+                system_message = None
+                user_messages = []
+
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_message = msg["content"]
+                    else:
+                        user_messages.append(msg)
+
+                kwargs = {
+                    "model": settings.anthropic_model,
+                    "max_tokens": max_tokens,
+                    "messages": user_messages
+                }
+
+                if system_message:
+                    kwargs["system"] = system_message
+
+                response = self.anthropic_client.messages.create(**kwargs)
                 return response.content[0].text
             
             else:  # OpenAI
                 response = self.openai_client.chat.completions.create(
                     model=settings.openai_model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
                     max_tokens=max_tokens,
                     temperature=settings.openai_temperature
                 )
