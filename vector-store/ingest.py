@@ -30,7 +30,17 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     
     Returns:
         List of text chunks
+
+    Raises:
+        ValueError: If chunk_size <= 0 or overlap >= chunk_size or overlap < 0
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be less than chunk_size")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative")
+
     words = text.split()
     chunks = []
     
@@ -77,7 +87,11 @@ def ingest_documents(
         source = doc.get("source", "unknown")
         
         # Chunk the content
-        chunks = chunk_text(content)
+        try:
+            chunks = chunk_text(content)
+        except ValueError as e:
+            print(f"Skipping document due to chunking error: {e}")
+            continue
         
         for i, chunk in enumerate(chunks):
             processed_docs.append({
