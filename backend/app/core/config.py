@@ -6,6 +6,7 @@ All settings are loaded from environment variables with sensible defaults.
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,18 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/enterprise_ai"
     database_echo: bool = False
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: str | None) -> str:
+        """Ensure database URL uses async driver."""
+        if not v:
+            return v
+        if v.startswith("postgres://"):
+            return v.replace("postgres://", "postgresql+asyncpg://", 1)
+        if v.startswith("postgresql://") and "+asyncpg" not in v:
+             return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
     
     # JWT Authentication
     jwt_secret_key: str = "your-super-secret-key-change-in-production"
