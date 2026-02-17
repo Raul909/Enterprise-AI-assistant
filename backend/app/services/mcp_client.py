@@ -51,19 +51,19 @@ class MCPClient:
     def __init__(self, base_url: str | None = None, timeout: int | None = None):
         self.base_url = base_url or settings.mcp_server_url
         self.timeout = timeout or settings.mcp_timeout_seconds
-        self._client: httpx.Client | None = None
+        self._client: httpx.AsyncClient | None = None
     
     @property
-    def client(self) -> httpx.Client:
+    def client(self) -> httpx.AsyncClient:
         """Lazy-initialize HTTP client."""
         if self._client is None:
-            self._client = httpx.Client(
+            self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout
             )
         return self._client
     
-    def discover_tools(self, role: str = "employee") -> List[Tool]:
+    async def discover_tools(self, role: str = "employee") -> List[Tool]:
         """
         Discover available tools from the MCP server.
         
@@ -74,7 +74,7 @@ class MCPClient:
             List of Tool objects
         """
         try:
-            response = self.client.get(f"/tools", params={"role": role})
+            response = await self.client.get(f"/tools", params={"role": role})
             response.raise_for_status()
             
             data = response.json()
@@ -101,7 +101,7 @@ class MCPClient:
                 Tool("search_documents", "Search internal documents", {})
             ]
     
-    def call_tool(
+    async def call_tool(
         self,
         tool_name: str,
         parameters: Dict[str, Any],
@@ -123,7 +123,7 @@ class MCPClient:
         start_time = time.time()
         
         try:
-            response = self.client.post(
+            response = await self.client.post(
                 f"/tools/{tool_name}",
                 json={
                     "role": role,
@@ -178,27 +178,27 @@ class MCPClient:
                 "execution_time_ms": execution_time_ms
             }
     
-    def get_tool_info(self, tool_name: str) -> Dict[str, Any] | None:
+    async def get_tool_info(self, tool_name: str) -> Dict[str, Any] | None:
         """Get information about a specific tool."""
         try:
-            response = self.client.get(f"/tools/{tool_name}")
+            response = await self.client.get(f"/tools/{tool_name}")
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError:
             return None
     
-    def health_check(self) -> bool:
+    async def health_check(self) -> bool:
         """Check if the MCP server is healthy."""
         try:
-            response = self.client.get("/")
+            response = await self.client.get("/")
             return response.status_code == 200
         except httpx.HTTPError:
             return False
     
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close the HTTP client."""
         if self._client:
-            self._client.close()
+            await self._client.aclose()
             self._client = None
 
 
