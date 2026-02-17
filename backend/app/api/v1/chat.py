@@ -29,7 +29,7 @@ async def chat(
     Requires authentication.
     """
     try:
-        response = ai_orchestrator.handle_query(user, request)
+        response = await ai_orchestrator.handle_query(user, request)
         return response
     except Exception as e:
         raise HTTPException(
@@ -55,6 +55,6 @@ async def chat_simple(
         )
     
     request = ChatRequest(query=query)
-    response = ai_orchestrator.handle_query(user, request)
+    response = await ai_orchestrator.handle_query(user, request)
     
     return {"answer": response.answer}

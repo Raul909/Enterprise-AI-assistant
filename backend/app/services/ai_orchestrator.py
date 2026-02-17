@@ -5,11 +5,13 @@ Coordinates between RAG, MCP tools, and LLM to answer user queries.
 
 import time
 import uuid
+import asyncio
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from dataclasses import dataclass, field
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 import anthropic
+from anthropic import AsyncAnthropic
 
 from core.config import settings
 from core.logging import get_logger, audit_logger
@@ -43,21 +45,21 @@ class AIOrchestrator:
     
     def __init__(self):
         self.mcp_client = MCPClient()
-        self._openai_client: OpenAI | None = None
-        self._anthropic_client: anthropic.Anthropic | None = None
+        self._openai_client: AsyncOpenAI | None = None
+        self._anthropic_client: AsyncAnthropic | None = None
     
     @property
-    def openai_client(self) -> OpenAI:
+    def openai_client(self) -> AsyncOpenAI:
         """Lazy-load OpenAI client."""
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=settings.openai_api_key)
+            self._openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
         return self._openai_client
     
     @property
-    def anthropic_client(self) -> anthropic.Anthropic:
+    def anthropic_client(self) -> AsyncAnthropic:
         """Lazy-load Anthropic client."""
         if self._anthropic_client is None:
-            self._anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            self._anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
         return self._anthropic_client
     
     def get_or_create_conversation(self, conversation_id: str | None) -> ConversationContext:
@@ -70,7 +72,7 @@ class AIOrchestrator:
         _conversations[new_id] = context
         return context
     
-    def handle_query(
+    async def handle_query(
         self,
         user: Dict[str, Any],
         request: ChatRequest
@@ -102,7 +104,7 @@ class AIOrchestrator:
         )
         
         # Step 1: Discover available tools
-        tools = self.mcp_client.discover_tools(role=user_role)
+        tools = await self.mcp_client.discover_tools(role=user_role)
         
         # Step 2: Get RAG context
         rag_context = rag_service.build_context(
@@ -114,6 +116,9 @@ class AIOrchestrator:
         tool_results = []
         tools_used = []
         
+        tasks = []
+        pending_tools = []
+
         for tool in tools:
             if tool.should_use(request.query):
                 # Check permission
@@ -123,28 +128,37 @@ class AIOrchestrator:
                 # Prepare parameters based on tool
                 params = self._prepare_tool_params(tool.name, request.query, user)
                 
-                # Execute tool
-                result = self.mcp_client.call_tool(
+                # Execute tool concurrently
+                task = self.mcp_client.call_tool(
                     tool_name=tool.name,
                     parameters=params,
                     role=user_role,
                     user_id=user_id
                 )
-                
-                tool_exec = ToolExecution(
-                    tool_name=tool.name,
-                    success=result.get("success", False),
-                    result=result.get("result") if result.get("success") else None,
-                    error=result.get("error"),
-                    execution_time_ms=result.get("execution_time_ms", 0)
-                )
-                tools_used.append(tool_exec)
-                
-                if result.get("success"):
-                    tool_results.append({
-                        "tool": tool.name,
-                        "data": result.get("result")
-                    })
+                tasks.append(task)
+                pending_tools.append(tool)
+
+        # Wait for all tools to complete
+        results = []
+        if tasks:
+            results = await asyncio.gather(*tasks)
+
+        # Process results
+        for tool, result in zip(pending_tools, results):
+            tool_exec = ToolExecution(
+                tool_name=tool.name,
+                success=result.get("success", False),
+                result=result.get("result") if result.get("success") else None,
+                error=result.get("error"),
+                execution_time_ms=result.get("execution_time_ms", 0)
+            )
+            tools_used.append(tool_exec)
+
+            if result.get("success"):
+                tool_results.append({
+                    "tool": tool.name,
+                    "data": result.get("result")
+                })
         
         # Step 4: Build prompt and call LLM
         prompt = self._build_prompt(
@@ -155,7 +169,7 @@ class AIOrchestrator:
         )
         
         # Call LLM
-        answer = self._call_llm(prompt, request.max_tokens)
+        answer = await self._call_llm(prompt, request.max_tokens)
         
         # Step 5: Update conversation
         context.messages.append({"role": "user", "content": request.query})
@@ -271,14 +285,14 @@ Answer:"""
         
         return prompt
     
-    def _call_llm(self, prompt: str, max_tokens: int | None = None) -> str:
+    async def _call_llm(self, prompt: str, max_tokens: int | None = None) -> str:
         """Call the configured LLM."""
         
         max_tokens = max_tokens or settings.openai_max_tokens
         
         try:
             if settings.ai_provider == "anthropic":
-                response = self.anthropic_client.messages.create(
+                response = await self.anthropic_client.messages.create(
                     model=settings.anthropic_model,
                     max_tokens=max_tokens,
                     messages=[{"role": "user", "content": prompt}]
@@ -286,7 +300,7 @@ Answer:"""
                 return response.content[0].text
             
             else:  # OpenAI
-                response = self.openai_client.chat.completions.create(
+                response = await self.openai_client.chat.completions.create(
                     model=settings.openai_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=max_tokens,
@@ -303,10 +317,10 @@ Answer:"""
 ai_orchestrator = AIOrchestrator()
 
 
-def handle_query(user: Dict[str, Any], query: str) -> str:
+async def handle_query(user: Dict[str, Any], query: str) -> str:
     """
     Legacy function for backward compatibility.
     """
     request = ChatRequest(query=query)
-    response = ai_orchestrator.handle_query(user, request)
+    response = await ai_orchestrator.handle_query(user, request)
     return response.answer
