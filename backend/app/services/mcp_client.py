@@ -4,7 +4,8 @@ Handles tool discovery and execution with proper error handling.
 """
 
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
+from contextvars import ContextVar
 
 import httpx
 
@@ -12,6 +13,9 @@ from core.config import settings
 from core.logging import get_logger, audit_logger
 
 logger = get_logger(__name__)
+
+# Context-local storage for HTTP client
+_client_var: ContextVar[httpx.AsyncClient | None] = ContextVar("mcp_client", default=None)
 
 
 class Tool:
@@ -51,17 +55,18 @@ class MCPClient:
     def __init__(self, base_url: str | None = None, timeout: int | None = None):
         self.base_url = base_url or settings.mcp_server_url
         self.timeout = timeout or settings.mcp_timeout_seconds
-        self._client: httpx.AsyncClient | None = None
     
     @property
     def client(self) -> httpx.AsyncClient:
-        """Lazy-initialize HTTP client."""
-        if self._client is None:
-            self._client = httpx.AsyncClient(
+        """Lazy-initialize HTTP client in the current context."""
+        client = _client_var.get()
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout
             )
-        return self._client
+            _client_var.set(client)
+        return client
     
     async def discover_tools(self, role: str = "employee") -> List[Tool]:
         """
@@ -74,7 +79,7 @@ class MCPClient:
             List of Tool objects
         """
         try:
-            response = await self.client.get(f"/tools", params={"role": role})
+            response = await self.client.get("/tools", params={"role": role})
             response.raise_for_status()
             
             data = response.json()
@@ -196,10 +201,11 @@ class MCPClient:
             return False
     
     async def close(self) -> None:
-        """Close the HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """Close the HTTP client in the current context."""
+        client = _client_var.get()
+        if client:
+            await client.aclose()
+            _client_var.set(None)
 
 
 # Global MCP client instance

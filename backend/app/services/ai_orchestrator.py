@@ -6,7 +6,8 @@ Coordinates between RAG, MCP tools, and LLM to answer user queries.
 import time
 import uuid
 import asyncio
-from typing import Dict, Any, List, Optional, AsyncGenerator
+from typing import Dict, Any, List
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 from openai import AsyncOpenAI
@@ -14,7 +15,7 @@ from anthropic import AsyncAnthropic
 
 from core.config import settings
 from core.logging import get_logger, audit_logger
-from services.mcp_client import MCPClient, Tool
+from services.mcp_client import MCPClient
 from services.rag_service import rag_service
 from services.permission_service import permission_service
 from schemas.chat import (
@@ -22,6 +23,10 @@ from schemas.chat import (
 )
 
 logger = get_logger(__name__)
+
+# Context-local storage for LLM clients
+_openai_client_var: ContextVar[AsyncOpenAI | None] = ContextVar("openai_client", default=None)
+_anthropic_client_var: ContextVar[AsyncAnthropic | None] = ContextVar("anthropic_client", default=None)
 
 
 @dataclass
@@ -44,22 +49,25 @@ class AIOrchestrator:
     
     def __init__(self):
         self.mcp_client = MCPClient()
-        self._openai_client: AsyncOpenAI | None = None
-        self._anthropic_client: AsyncAnthropic | None = None
+        # Clients are managed via ContextVars to ensure loop safety
     
     @property
     def openai_client(self) -> AsyncOpenAI:
-        """Lazy-load OpenAI client."""
-        if self._openai_client is None:
-            self._openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
-        return self._openai_client
+        """Lazy-load OpenAI client in current context."""
+        client = _openai_client_var.get()
+        if client is None:
+            client = AsyncOpenAI(api_key=settings.openai_api_key)
+            _openai_client_var.set(client)
+        return client
     
     @property
     def anthropic_client(self) -> AsyncAnthropic:
-        """Lazy-load Anthropic client."""
-        if self._anthropic_client is None:
-            self._anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
-        return self._anthropic_client
+        """Lazy-load Anthropic client in current context."""
+        client = _anthropic_client_var.get()
+        if client is None:
+            client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+            _anthropic_client_var.set(client)
+        return client
     
     def get_or_create_conversation(self, conversation_id: str | None) -> ConversationContext:
         """Get existing conversation or create a new one."""
@@ -328,6 +336,14 @@ def handle_query(user: Dict[str, Any], query: str) -> str:
     """
     Legacy function for backward compatibility.
     """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+         raise RuntimeError("Cannot call synchronous handle_query from an async context. Use await ai_orchestrator.handle_query() instead.")
+
     request = ChatRequest(query=query)
     # Use asyncio.run to execute the async method from sync context
     return asyncio.run(ai_orchestrator.handle_query(user, request)).answer

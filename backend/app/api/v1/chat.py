@@ -3,7 +3,6 @@ Chat API endpoints.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
 
 from core.security import get_current_user
 from services.ai_orchestrator import ai_orchestrator
