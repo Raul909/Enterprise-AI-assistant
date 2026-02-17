@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from core.config import settings
+from db.session import get_db
+from models.token_blacklist import TokenBlacklist
 
 
 # Password hashing
@@ -107,12 +109,24 @@ def decode_token(token: str) -> dict[str, Any]:
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
     Dependency to get the current authenticated user from JWT token.
     Returns a dict with user info from the token.
     """
     payload = decode_token(token)
+
+    # Check if token is blacklisted
+    result = await db.execute(
+        select(TokenBlacklist).where(TokenBlacklist.token == token)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     token_type = payload.get("type")
     if token_type != "access":

@@ -16,10 +16,12 @@ from core.security import (
     create_refresh_token,
     decode_token,
     get_current_user,
+    oauth2_scheme,
 )
 from core.logging import audit_logger
 from db.session import get_db
 from models.user import User
+from models.token_blacklist import TokenBlacklist
 from schemas.user import (
     UserCreate,
     UserResponse,
@@ -212,12 +214,29 @@ async def get_me(
 @router.post("/logout")
 async def logout(
     current_user: dict = Depends(get_current_user),
+    token: str = Depends(oauth2_scheme),
+    db: AsyncSession = Depends(get_db),
 ):
     """
-    Logout current user (client should discard tokens).
-    
-    Note: In a production system, you would add the token to a blacklist.
+    Logout current user and blacklist the token.
     """
+    # Get token expiration
+    payload = decode_token(token)
+    expires_at = datetime.fromtimestamp(payload["exp"], tz=timezone.utc)
+
+    # Add to blacklist
+    blacklist_entry = TokenBlacklist(
+        token=token,
+        expires_at=expires_at
+    )
+    db.add(blacklist_entry)
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        # Even if blacklist fails, we log the event
+
     audit_logger.log_auth_event(
         event_type="logout",
         user_id=current_user["id"],
