@@ -6,7 +6,6 @@ Coordinates between RAG, MCP tools, and LLM to answer user queries.
 import time
 import uuid
 from typing import Dict, Any, List, Optional, AsyncGenerator
-from dataclasses import dataclass, field
 
 from openai import OpenAI
 import anthropic
@@ -16,24 +15,14 @@ from core.logging import get_logger, audit_logger
 from services.mcp_client import MCPClient, Tool
 from services.rag_service import rag_service
 from services.permission_service import permission_service
+from services.conversation_storage import conversation_storage
 from schemas.chat import (
-    ChatRequest, ChatResponse, ToolExecution, SourceReference
+    ChatRequest, ChatResponse, ToolExecution, SourceReference, ConversationContext
 )
 
 logger = get_logger(__name__)
 
 
-@dataclass
-class ConversationContext:
-    """Holds context for a conversation."""
-    conversation_id: str
-    messages: List[Dict[str, str]] = field(default_factory=list)
-    tools_used: List[ToolExecution] = field(default_factory=list)
-    sources: List[SourceReference] = field(default_factory=list)
-
-
-# Simple in-memory conversation store (use Redis in production)
-_conversations: Dict[str, ConversationContext] = {}
 
 
 class AIOrchestrator:
@@ -62,12 +51,14 @@ class AIOrchestrator:
     
     def get_or_create_conversation(self, conversation_id: str | None) -> ConversationContext:
         """Get existing conversation or create a new one."""
-        if conversation_id and conversation_id in _conversations:
-            return _conversations[conversation_id]
+        if conversation_id:
+            context = conversation_storage.get(conversation_id)
+            if context:
+                return context
         
         new_id = conversation_id or str(uuid.uuid4())
         context = ConversationContext(conversation_id=new_id)
-        _conversations[new_id] = context
+        conversation_storage.set(new_id, context)
         return context
     
     def handle_query(
@@ -162,6 +153,9 @@ class AIOrchestrator:
         context.messages.append({"role": "assistant", "content": answer})
         context.tools_used.extend(tools_used)
         
+        # Persist updated conversation
+        conversation_storage.set(context.conversation_id, context)
+
         # Build sources from RAG results
         sources = []
         if request.include_sources:
