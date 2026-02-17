@@ -3,6 +3,7 @@ RAG (Retrieval-Augmented Generation) service for building context from vector st
 """
 
 import os
+import asyncio
 from typing import List, Dict, Any
 from pathlib import Path
 
@@ -70,7 +71,7 @@ class RAGService:
             logger.error("Failed to initialize RAG service", error=str(e))
             raise
     
-    def semantic_search(
+    async def semantic_search(
         self,
         query: str,
         top_k: int | None = None,
@@ -90,7 +91,7 @@ class RAGService:
             List of relevant documents with scores
         """
         if not self._initialized:
-            self.initialize()
+            await asyncio.to_thread(self.initialize)
         
         if not self._index or self._index.ntotal == 0:
             logger.warning("Search attempted on empty index")
@@ -99,10 +100,10 @@ class RAGService:
         top_k = top_k or settings.vector_search_top_k
         
         # Encode query
-        query_embedding = self.model.encode([query])
+        query_embedding = await asyncio.to_thread(self.model.encode, [query])
         
         # Search
-        distances, indices = self._index.search(query_embedding, min(top_k * 2, self._index.ntotal))
+        distances, indices = await asyncio.to_thread(self._index.search, query_embedding, min(top_k * 2, self._index.ntotal))
         
         results = []
         for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
@@ -138,7 +139,7 @@ class RAGService:
         
         return results
     
-    def build_context(
+    async def build_context(
         self,
         query: str,
         department: str | None = None,
@@ -155,7 +156,7 @@ class RAGService:
         Returns:
             Formatted context string
         """
-        results = self.semantic_search(query, department=department)
+        results = await self.semantic_search(query, department=department)
         
         if not results:
             return "No relevant documents found."
@@ -239,6 +240,6 @@ class RAGService:
 rag_service = RAGService()
 
 
-def build_context(query: str, department: str | None = None) -> str:
+async def build_context(query: str, department: str | None = None) -> str:
     """Convenience function for building context."""
-    return rag_service.build_context(query, department)
+    return await rag_service.build_context(query, department)

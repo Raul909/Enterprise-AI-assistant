@@ -5,6 +5,7 @@ Coordinates between RAG, MCP tools, and LLM to answer user queries.
 
 import time
 import uuid
+import asyncio
 from typing import Dict, Any, List, Optional, AsyncGenerator
 from dataclasses import dataclass, field
 
@@ -70,7 +71,7 @@ class AIOrchestrator:
         _conversations[new_id] = context
         return context
     
-    def handle_query(
+    async def handle_query(
         self,
         user: Dict[str, Any],
         request: ChatRequest
@@ -102,10 +103,11 @@ class AIOrchestrator:
         )
         
         # Step 1: Discover available tools
-        tools = self.mcp_client.discover_tools(role=user_role)
+        # Offload sync MCP call to thread
+        tools = await asyncio.to_thread(self.mcp_client.discover_tools, role=user_role)
         
         # Step 2: Get RAG context
-        rag_context = rag_service.build_context(
+        rag_context = await rag_service.build_context(
             query=request.query,
             department=user_dept
         )
@@ -124,7 +126,9 @@ class AIOrchestrator:
                 params = self._prepare_tool_params(tool.name, request.query, user)
                 
                 # Execute tool
-                result = self.mcp_client.call_tool(
+                # Offload sync MCP call to thread
+                result = await asyncio.to_thread(
+                    self.mcp_client.call_tool,
                     tool_name=tool.name,
                     parameters=params,
                     role=user_role,
@@ -155,7 +159,8 @@ class AIOrchestrator:
         )
         
         # Call LLM
-        answer = self._call_llm(prompt, request.max_tokens)
+        # Offload sync LLM call to thread
+        answer = await asyncio.to_thread(self._call_llm, prompt, request.max_tokens)
         
         # Step 5: Update conversation
         context.messages.append({"role": "user", "content": request.query})
@@ -165,7 +170,7 @@ class AIOrchestrator:
         # Build sources from RAG results
         sources = []
         if request.include_sources:
-            rag_results = rag_service.semantic_search(request.query, department=user_dept)
+            rag_results = await rag_service.semantic_search(request.query, department=user_dept)
             for doc in rag_results[:3]:
                 sources.append(SourceReference(
                     title=doc.get("title", "Document"),
@@ -303,10 +308,10 @@ Answer:"""
 ai_orchestrator = AIOrchestrator()
 
 
-def handle_query(user: Dict[str, Any], query: str) -> str:
+async def handle_query(user: Dict[str, Any], query: str) -> str:
     """
     Legacy function for backward compatibility.
     """
     request = ChatRequest(query=query)
-    response = ai_orchestrator.handle_query(user, request)
+    response = await ai_orchestrator.handle_query(user, request)
     return response.answer
