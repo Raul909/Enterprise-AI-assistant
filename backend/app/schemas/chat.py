@@ -89,3 +89,11 @@ class ConversationHistory(BaseModel):
     messages: list[ConversationMessage]
     created_at: datetime
     updated_at: datetime
+
+
+class ConversationContext(BaseModel):
+    """Holds context for a conversation."""
+    conversation_id: str
+    messages: list[dict[str, str]] = Field(default_factory=list)
+    tools_used: list[ToolExecution] = Field(default_factory=list)
+    sources: list[SourceReference] = Field(default_factory=list)

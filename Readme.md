@@ -7,6 +7,7 @@ An enterprise-grade AI assistant that enables employees to query internal knowle
 ## 🚀 Key Features
 
 - **Natural Language Queries** - Ask questions in plain English about company data
+- **Modern React UI** - Beautiful, professional interface with real-time chat
 - **MCP Tool Orchestration** - Secure, auditable tool execution via Model Context Protocol
 - **Multi-Source RAG** - Search documents, databases, GitHub, and Jira
 - **Role-Based Access Control (RBAC)** - Fine-grained permissions per user role
@@ -55,6 +56,7 @@ An enterprise-grade AI assistant that enables employees to query internal knowle
 
 | Layer | Technology |
 |-------|------------|
+| **Frontend** | React 18, Vite, Lucide Icons |
 | **Backend** | Python 3.11, FastAPI, SQLAlchemy, Pydantic |
 | **AI** | OpenAI GPT-4 / Anthropic Claude, SentenceTransformers, FAISS |
 | **MCP** | Custom MCP Server with Tool Registry |
@@ -68,6 +70,20 @@ An enterprise-grade AI assistant that enables employees to query internal knowle
 
 ```
 enterprise-ai-assistant/
+├── frontend/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── Login.jsx
+│   │   │   ├── Login.css
+│   │   │   ├── Chat.jsx
+│   │   │   └── Chat.css
+│   │   ├── App.jsx
+│   │   ├── api.js
+│   │   ├── main.jsx
+│   │   └── index.css
+│   ├── index.html
+│   ├── vite.config.js
+│   └── package.json
 ├── backend/
 │   ├── app/
 │   │   ├── api/v1/          # REST endpoints
@@ -156,7 +172,14 @@ uvicorn server:app --host 0.0.0.0 --port 3333 --reload
 cd backend
 pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 3: Start Frontend
+cd frontend
+npm install
+npm run dev
 ```
+
+Access the UI at http://localhost:3000
 
 ---
 
