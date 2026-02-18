@@ -6,7 +6,6 @@ Coordinates between RAG, MCP tools, and LLM to answer user queries.
 import time
 import uuid
 from typing import Dict, Any, List, Optional, AsyncGenerator
-from dataclasses import dataclass, field
 
 from openai import OpenAI
 import anthropic
@@ -16,24 +15,14 @@ from core.logging import get_logger, audit_logger
 from services.mcp_client import MCPClient, Tool
 from services.rag_service import rag_service
 from services.permission_service import permission_service
+from services.conversation_storage import conversation_storage
 from schemas.chat import (
-    ChatRequest, ChatResponse, ToolExecution, SourceReference
+    ChatRequest, ChatResponse, ToolExecution, SourceReference, ConversationContext
 )
 
 logger = get_logger(__name__)
 
 
-@dataclass
-class ConversationContext:
-    """Holds context for a conversation."""
-    conversation_id: str
-    messages: List[Dict[str, str]] = field(default_factory=list)
-    tools_used: List[ToolExecution] = field(default_factory=list)
-    sources: List[SourceReference] = field(default_factory=list)
-
-
-# Simple in-memory conversation store (use Redis in production)
-_conversations: Dict[str, ConversationContext] = {}
 
 
 class AIOrchestrator:
@@ -62,12 +51,14 @@ class AIOrchestrator:
     
     def get_or_create_conversation(self, conversation_id: str | None) -> ConversationContext:
         """Get existing conversation or create a new one."""
-        if conversation_id and conversation_id in _conversations:
-            return _conversations[conversation_id]
+        if conversation_id:
+            context = conversation_storage.get(conversation_id)
+            if context:
+                return context
         
         new_id = conversation_id or str(uuid.uuid4())
         context = ConversationContext(conversation_id=new_id)
-        _conversations[new_id] = context
+        conversation_storage.set(new_id, context)
         return context
     
     def handle_query(
@@ -147,7 +138,7 @@ class AIOrchestrator:
                     })
         
         # Step 4: Build prompt and call LLM
-        prompt = self._build_prompt(
+        messages = self._build_prompt(
             query=request.query,
             rag_context=rag_context,
             tool_results=tool_results,
@@ -155,13 +146,16 @@ class AIOrchestrator:
         )
         
         # Call LLM
-        answer = self._call_llm(prompt, request.max_tokens)
+        answer = self._call_llm(messages, request.max_tokens)
         
         # Step 5: Update conversation
         context.messages.append({"role": "user", "content": request.query})
         context.messages.append({"role": "assistant", "content": answer})
         context.tools_used.extend(tools_used)
         
+        # Persist updated conversation
+        conversation_storage.set(context.conversation_id, context)
+
         # Build sources from RAG results
         sources = []
         if request.include_sources:
@@ -234,61 +228,76 @@ class AIOrchestrator:
         rag_context: str,
         tool_results: List[Dict[str, Any]],
         conversation_history: List[Dict[str, str]]
-    ) -> str:
-        """Build the prompt for the LLM."""
+    ) -> List[Dict[str, str]]:
+        """Build the structured prompt for the LLM."""
         
-        history_text = ""
-        if conversation_history:
-            history_text = "\n## Conversation History\n"
-            for msg in conversation_history[-4:]:  # Last 4 messages
-                role = msg["role"].capitalize()
-                history_text += f"{role}: {msg['content'][:500]}\n"
-        
-        tool_text = ""
-        if tool_results:
-            tool_text = "\n## Tool Results\n"
-            for result in tool_results:
-                tool_text += f"**{result['tool']}**:\n{str(result['data'])[:1000]}\n\n"
-        
-        prompt = f"""You are an Enterprise AI Assistant helping employees find information and answer questions about company resources.
+        system_prompt = """You are an Enterprise AI Assistant helping employees find information and answer questions about company resources.
 
-## Context from Documents
-{rag_context}
-{tool_text}
-{history_text}
-
-## User Question
-{query}
-
-## Instructions
+Instructions:
 - Answer the question based on the provided context and tool results
 - If you don't have enough information, say so clearly
 - Be concise but comprehensive
 - Use professional, helpful language
-- If referencing specific documents or data, mention the source
+- If referencing specific documents or data, mention the source"""
 
-Answer:"""
+        # Build context content
+        context_content = ""
         
-        return prompt
+        if rag_context:
+            context_content += f"<context_from_documents>\n{rag_context}\n</context_from_documents>\n\n"
+
+        if tool_results:
+            tool_text = ""
+            for result in tool_results:
+                tool_text += f"**{result['tool']}**:\n{str(result['data'])[:1000]}\n\n"
+            context_content += f"<tool_results>\n{tool_text}\n</tool_results>\n\n"
+
+        if conversation_history:
+            history_text = ""
+            for msg in conversation_history[-4:]:  # Last 4 messages
+                role = msg["role"].capitalize()
+                history_text += f"{role}: {msg['content'][:500]}\n"
+            context_content += f"<conversation_history>\n{history_text}\n</conversation_history>\n\n"
+
+        user_content = f"""{context_content}
+<user_question>
+{query}
+</user_question>"""
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
     
-    def _call_llm(self, prompt: str, max_tokens: int | None = None) -> str:
+    def _call_llm(self, messages: List[Dict[str, str]], max_tokens: int | None = None) -> str:
         """Call the configured LLM."""
         
         max_tokens = max_tokens or settings.openai_max_tokens
         
         try:
             if settings.ai_provider == "anthropic":
+                # Extract system message for Anthropic
+                system_message = ""
+                chat_messages = []
+
+                for msg in messages:
+                    if msg["role"] == "system":
+                        system_message = msg["content"]
+                    else:
+                        chat_messages.append(msg)
+
                 response = self.anthropic_client.messages.create(
                     model=settings.anthropic_model,
                     max_tokens=max_tokens,
-                    messages=[{"role": "user", "content": prompt}]
+                    system=system_message,
+                    messages=chat_messages
                 )
                 return response.content[0].text
             
             else:  # OpenAI
                 response = self.openai_client.chat.completions.create(
                     model=settings.openai_model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
                     max_tokens=max_tokens,
                     temperature=settings.openai_temperature
                 )
