@@ -61,7 +61,7 @@ class AIOrchestrator:
         conversation_storage.set(new_id, context)
         return context
     
-    def handle_query(
+    async def handle_query(
         self,
         user: Dict[str, Any],
         request: ChatRequest
@@ -96,7 +96,7 @@ class AIOrchestrator:
         tools = self.mcp_client.discover_tools(role=user_role)
         
         # Step 2: Get RAG context
-        rag_context = rag_service.build_context(
+        rag_context = await rag_service.build_context(
             query=request.query,
             department=user_dept
         )
@@ -159,7 +159,7 @@ class AIOrchestrator:
         # Build sources from RAG results
         sources = []
         if request.include_sources:
-            rag_results = rag_service.semantic_search(request.query, department=user_dept)
+            rag_results = await rag_service.semantic_search(request.query, department=user_dept)
             for doc in rag_results[:3]:
                 sources.append(SourceReference(
                     title=doc.get("title", "Document"),
@@ -312,10 +312,10 @@ Instructions:
 ai_orchestrator = AIOrchestrator()
 
 
-def handle_query(user: Dict[str, Any], query: str) -> str:
+async def handle_query(user: Dict[str, Any], query: str) -> str:
     """
     Legacy function for backward compatibility.
     """
     request = ChatRequest(query=query)
-    response = ai_orchestrator.handle_query(user, request)
+    response = await ai_orchestrator.handle_query(user, request)
     return response.answer

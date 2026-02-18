@@ -7,11 +7,14 @@ from typing import List, Dict, Any
 from pathlib import Path
 
 import faiss
-import pickle
+import numpy as np
 from sentence_transformers import SentenceTransformer
+from sqlalchemy import select
 
 from core.config import settings
 from core.logging import get_logger
+from db.session import async_session_factory
+from models.document import Document
 
 logger = get_logger(__name__)
 
@@ -25,7 +28,6 @@ class RAGService:
     def __init__(self):
         self._model: SentenceTransformer | None = None
         self._index: faiss.Index | None = None
-        self._documents: List[Dict[str, Any]] = []
         self._initialized = False
     
     @property
@@ -36,8 +38,8 @@ class RAGService:
             self._model = SentenceTransformer(settings.embedding_model)
         return self._model
     
-    def initialize(self) -> None:
-        """Load the FAISS index and documents from disk."""
+    async def initialize(self) -> None:
+        """Load the FAISS index from disk."""
         if self._initialized:
             return
         
@@ -46,31 +48,26 @@ class RAGService:
         docs_path = vector_store_path / "docs.pkl"
         
         try:
-            if index_path.exists() and docs_path.exists():
+            if index_path.exists():
                 self._index = faiss.read_index(str(index_path))
-                with open(docs_path, "rb") as f:
-                    self._documents = pickle.load(f)
                 self._initialized = True
                 logger.info(
                     "RAG service initialized",
-                    num_documents=len(self._documents),
                     index_size=self._index.ntotal if self._index else 0
                 )
             else:
                 logger.warning(
-                    "Vector store files not found",
-                    index_path=str(index_path),
-                    docs_path=str(docs_path)
+                    "Vector store index not found",
+                    index_path=str(index_path)
                 )
                 # Create empty index
                 self._index = faiss.IndexFlatL2(384)  # Default dimension for MiniLM
-                self._documents = []
                 self._initialized = True
         except Exception as e:
             logger.error("Failed to initialize RAG service", error=str(e))
             raise
     
-    def semantic_search(
+    async def semantic_search(
         self,
         query: str,
         top_k: int | None = None,
@@ -90,7 +87,7 @@ class RAGService:
             List of relevant documents with scores
         """
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         if not self._index or self._index.ntotal == 0:
             logger.warning("Search attempted on empty index")
@@ -104,41 +101,60 @@ class RAGService:
         # Search
         distances, indices = self._index.search(query_embedding, min(top_k * 2, self._index.ntotal))
         
+        # indices[0] contains the vector_ids
+        found_indices = [int(idx) for idx in indices[0] if idx >= 0]
+        if not found_indices:
+            return []
+            
+        # Map vector_id back to score/distance
+        score_map = {}
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx >= 0:
+                # Convert L2 distance to similarity score (0-1)
+                score = 1 / (1 + dist)
+                score_map[int(idx)] = score
+
+        # Fetch documents from DB
         results = []
-        for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
-            if idx < 0 or idx >= len(self._documents):
-                continue
+        async with async_session_factory() as session:
+            stmt = select(Document).where(Document.vector_id.in_(found_indices))
+            db_docs = (await session.execute(stmt)).scalars().all()
             
-            doc = self._documents[idx]
+            # Create a dict for O(1) lookup
+            docs_by_id = {doc.vector_id: doc for doc in db_docs}
             
-            # Convert L2 distance to similarity score (0-1)
-            # Lower distance = higher similarity
-            score = 1 / (1 + dist)
-            
-            if score < min_score:
-                continue
-            
-            # Department filtering
-            if department and department != "*":
-                doc_dept = doc.get("department", "public")
-                if doc_dept not in [department, "public", "general"]:
+            # Maintain the order returned by FAISS
+            for idx in found_indices:
+                if idx not in docs_by_id:
                     continue
-            
-            results.append({
-                "content": doc.get("content", doc) if isinstance(doc, dict) else doc,
-                "title": doc.get("title", f"Document {idx}") if isinstance(doc, dict) else f"Document {idx}",
-                "department": doc.get("department", "public") if isinstance(doc, dict) else "public",
-                "source": doc.get("source", "unknown") if isinstance(doc, dict) else "unknown",
-                "score": score,
-                "index": idx
-            })
-            
-            if len(results) >= top_k:
-                break
+
+                doc = docs_by_id[idx]
+                score = score_map.get(idx, 0.0)
+
+                if score < min_score:
+                    continue
+
+                # Department filtering
+                if department and department != "*":
+                    doc_dept = doc.department
+                    if doc_dept not in [department, "public", "general"]:
+                        continue
+
+                results.append({
+                    "content": doc.content,
+                    "title": doc.title,
+                    "department": doc.department,
+                    "source": doc.source,
+                    "score": score,
+                    "index": idx
+                })
+
+                if len(results) >= top_k:
+                    break
         
         return results
     
-    def build_context(
+    async def build_context(
         self,
         query: str,
         department: str | None = None,
@@ -155,7 +171,7 @@ class RAGService:
         Returns:
             Formatted context string
         """
-        results = self.semantic_search(query, department=department)
+        results = await self.semantic_search(query, department=department)
         
         if not results:
             return "No relevant documents found."
@@ -183,13 +199,13 @@ class RAGService:
         
         return "\n".join(context_parts)
     
-    def add_documents(
+    async def add_documents(
         self,
         documents: List[Dict[str, Any]],
         save: bool = True
     ) -> int:
         """
-        Add new documents to the index.
+        Add new documents to the index and database.
         
         Args:
             documents: List of documents with 'content' field
@@ -199,7 +215,7 @@ class RAGService:
             Number of documents added
         """
         if not self._initialized:
-            self.initialize()
+            await self.initialize()
         
         if not documents:
             return 0
@@ -213,9 +229,25 @@ class RAGService:
             dim = embeddings.shape[1]
             self._index = faiss.IndexFlatL2(dim)
         
+        start_idx = self._index.ntotal
+
         # Add to index
         self._index.add(embeddings)
-        self._documents.extend(documents)
+
+        # Add to DB
+        async with async_session_factory() as session:
+            for i, doc_data in enumerate(documents):
+                vector_id = start_idx + i
+                new_doc = Document(
+                    vector_id=vector_id,
+                    content=doc_data.get("content", str(doc_data)),
+                    title=doc_data.get("title", f"Document {vector_id}"),
+                    department=doc_data.get("department", "public"),
+                    source=doc_data.get("source", "unknown"),
+                    metadata_json=doc_data
+                )
+                session.add(new_doc)
+            await session.commit()
         
         if save:
             self._save_to_disk()
@@ -224,21 +256,21 @@ class RAGService:
         return len(documents)
     
     def _save_to_disk(self) -> None:
-        """Save the index and documents to disk."""
+        """Save the index to disk."""
         vector_store_path = Path(settings.vector_store_path)
         vector_store_path.mkdir(parents=True, exist_ok=True)
         
-        faiss.write_index(self._index, str(vector_store_path / "index.faiss"))
-        with open(vector_store_path / "docs.pkl", "wb") as f:
-            pickle.dump(self._documents, f)
+        if self._index:
+            faiss.write_index(self._index, str(vector_store_path / "index.faiss"))
         
-        logger.info("Vector store saved to disk")
+        logger.info("Vector store index saved to disk")
 
 
 # Global RAG service instance
 rag_service = RAGService()
 
 
-def build_context(query: str, department: str | None = None) -> str:
+# Note: This is async now
+async def build_context(query: str, department: str | None = None) -> str:
     """Convenience function for building context."""
-    return rag_service.build_context(query, department)
+    return await rag_service.build_context(query, department)
