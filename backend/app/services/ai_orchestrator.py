@@ -105,10 +105,11 @@ class AIOrchestrator:
         tools = self.mcp_client.discover_tools(role=user_role)
         
         # Step 2: Get RAG context
-        rag_context = rag_service.build_context(
+        rag_results = rag_service.semantic_search(
             query=request.query,
             department=user_dept
         )
+        rag_context = rag_service.format_context(rag_results)
         
         # Step 3: Determine which tools to use and execute them
         tool_results = []
@@ -165,7 +166,6 @@ class AIOrchestrator:
         # Build sources from RAG results
         sources = []
         if request.include_sources:
-            rag_results = rag_service.semantic_search(request.query, department=user_dept)
             for doc in rag_results[:3]:
                 sources.append(SourceReference(
                     title=doc.get("title", "Document"),
