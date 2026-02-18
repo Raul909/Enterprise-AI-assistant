@@ -47,7 +47,8 @@ TOOLS = {
         "name": "query_database",
         "description": "Run read-only SQL queries on the enterprise database. Only SELECT statements allowed.",
         "parameters": {
-            "query": {"type": "string", "description": "SQL SELECT query", "required": True}
+            "query": {"type": "string", "description": "SQL SELECT query", "required": True},
+            "params": {"type": "object", "description": "Query parameters (dictionary)", "required": False}
         },
         "handler": query_database
     },
