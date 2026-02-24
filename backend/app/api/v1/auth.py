@@ -19,6 +19,7 @@ from core.security import (
 )
 from core.logging import audit_logger
 from db.session import get_db
+from services.rate_limiter import login_rate_limit
 from models.user import User
 from schemas.user import (
     UserCreate,
@@ -75,7 +76,7 @@ async def register(
     return user
 
 
-@router.post("/login", response_model=LoginResponse)
+@router.post("/login", response_model=LoginResponse, dependencies=[Depends(login_rate_limit)])
 async def login(
     login_data: LoginRequest,
     request: Request,

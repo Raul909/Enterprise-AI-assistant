@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     cache_ttl_seconds: int = 3600
     
+    # Rate Limiting
+    login_rate_limit_count: int = 5
+    login_rate_limit_window: int = 60
+
     # Logging
     log_level: str = "INFO"
     log_format: Literal["json", "text"] = "json"
