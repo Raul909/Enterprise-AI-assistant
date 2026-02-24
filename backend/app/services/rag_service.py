@@ -154,25 +154,21 @@ class RAGService:
         
         return results
     
-    async def build_context(
+    def format_context(
         self,
-        query: str,
-        department: str | None = None,
+        results: List[Dict[str, Any]],
         max_tokens: int = 2000
     ) -> str:
         """
-        Build a context string for the LLM from relevant documents.
+        Format search results into a context string for the LLM.
         
         Args:
-            query: User query
-            department: User's department for filtering
+            results: List of search results
             max_tokens: Approximate max tokens for context
-        
+
         Returns:
             Formatted context string
         """
-        results = await self.semantic_search(query, department=department)
-        
         if not results:
             return "No relevant documents found."
         
@@ -182,8 +178,8 @@ class RAGService:
         
         for i, doc in enumerate(results, 1):
             content = doc["content"]
-            title = doc["title"]
-            score = doc["score"]
+            title = doc.get("title", "Document")
+            score = doc.get("score", 0.0)
             
             # Truncate if needed
             if len(content) > 1000:
@@ -198,6 +194,26 @@ class RAGService:
             total_chars += len(part)
         
         return "\n".join(context_parts)
+
+    async def build_context(
+        self,
+        query: str,
+        department: str | None = None,
+        max_tokens: int = 2000
+    ) -> str:
+        """
+        Build a context string for the LLM from relevant documents.
+
+        Args:
+            query: User query
+            department: User's department for filtering
+            max_tokens: Approximate max tokens for context
+
+        Returns:
+            Formatted context string
+        """
+        results = await self.semantic_search(query, department=department)
+        return self.format_context(results, max_tokens=max_tokens)
     
     async def add_documents(
         self,
