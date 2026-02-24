@@ -1,17 +1,12 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
-import faiss
 import numpy as np
-import sys
 from services import rag_service as rag_service_module
 from services.rag_service import rag_service
 from models.document import Document
 
 @pytest.mark.asyncio
 async def test_semantic_search():
-    # Check if async_session_factory is in the module
-    print(f"Module dir: {dir(rag_service_module)}")
-
     # Mock FAISS index
     rag_service._index = MagicMock()
     rag_service._index.ntotal = 5
