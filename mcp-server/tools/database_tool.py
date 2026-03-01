@@ -134,7 +134,9 @@ def _validate_query(query: str) -> tuple[bool, str]:
     if "--" in query or "/*" in query:
         return False, "SQL comments are not allowed"
     
-    if ";" in query and not query.strip().endswith(";"):
+    # Check for multiple statements (only one semicolon allowed at the very end)
+    normalized_query = query.strip()
+    if ";" in (normalized_query[:-1] if normalized_query.endswith(";") else normalized_query):
         return False, "Multiple statements are not allowed"
     
     return True, ""
@@ -170,7 +172,7 @@ def query_database(query: str, params: Dict[str, Any] | None = None) -> Dict[str
         if "LIMIT" not in query_upper:
             query = f"{query.rstrip(';')} LIMIT {MAX_ROWS}"
         
-        cursor.execute(query)
+        cursor.execute(query, params or {})
         rows = cursor.fetchall()
         
         # Get column names
