@@ -36,6 +36,10 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     """
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
+    if overlap < 0:
+        raise ValueError("overlap must be non-negative")
+    if overlap >= chunk_size:
+        raise ValueError("overlap must be less than chunk_size")
     if overlap >= chunk_size:
         raise ValueError("overlap must be less than chunk_size")
     if overlap < 0:
@@ -44,8 +48,11 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     words = text.split()
     chunks = []
     
+    if not words:
+        return [""]
+
     if len(words) <= chunk_size:
-        return [text]
+        return [" ".join(words)]
     
     start = 0
     while start < len(words):
