@@ -3,11 +3,15 @@ MCP Server for Enterprise AI Assistant.
 Registers and exposes tools for the AI orchestrator to use.
 """
 
+import os
+import json
+import time
+from typing import Any, Dict, List, Optional
+
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Any, Dict, List, Optional
-import time
+from dotenv import load_dotenv
 
 from permissions import can_access, ROLE_TOOL_MAP
 from tools.document_tool import search_documents
@@ -16,16 +20,27 @@ from tools.github_tool import search_github, get_github_file, get_repo_info, lis
 from tools.jira_tool import search_jira, get_jira_ticket, get_project_info, list_sprints
 
 
+# Load environment variables
+load_dotenv()
+
 app = FastAPI(
     title="MCP Server",
     description="Model Context Protocol Server for Enterprise AI Assistant",
     version="1.0.0"
 )
 
+# CORS configuration
+cors_origins_str = os.getenv("CORS_ORIGINS", '["http://localhost:3000", "http://localhost:8000"]')
+try:
+    cors_origins = json.loads(cors_origins_str)
+except (json.JSONDecodeError, TypeError):
+    # Fallback to defaults if parsing fails
+    cors_origins = ["http://localhost:3000", "http://localhost:8000"]
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
